@@ -2038,6 +2038,21 @@ func TestWebsocketTimelineLogFallsBackToMemoryWithoutSource(t *testing.T) {
 	}
 }
 
+func TestRepairResponsesWebsocketToolCallsPreservesNamedUnsolicitedOutputs(t *testing.T) {
+	cache := newWebsocketToolOutputCache(time.Minute, 10)
+	for _, name := range []string{"automation_update", "create_thread", "send_message_to_thread"} {
+		t.Run(name, func(t *testing.T) {
+			for _, idField := range []string{"", `,"call_id":null`} {
+				raw := []byte(fmt.Sprintf(`{"input":[{"type":"message","role":"user","content":"prior context"},{"type":"function_call_output","namespace":"codex_app","name":%q,"output":"SCHEDULE_TOOL_OK"%s}]}`, name, idField))
+				repaired := repairResponsesWebsocketToolCallsWithCache(cache, "unsolicited-test", raw)
+				if got := gjson.GetBytes(repaired, "input.1.output").String(); got != "SCHEDULE_TOOL_OK" {
+					t.Fatalf("named standalone output was dropped: %s", repaired)
+				}
+			}
+		})
+	}
+}
+
 func TestRepairResponsesWebsocketToolCallsInsertsCachedOutput(t *testing.T) {
 	cache := newWebsocketToolOutputCache(time.Minute, 10)
 	sessionKey := "session-1"
