@@ -308,6 +308,9 @@ func waitAndSmoke(port int, dir, key string) error {
 	for time.Now().Before(until) {
 		pid, e := listenerPID(port)
 		if e == nil && runningFrom(pid, dir) {
+			if err := waitModel(port, key); err != nil {
+				return err
+			}
 			return smoke(port, key)
 		}
 		time.Sleep(500 * time.Millisecond)
