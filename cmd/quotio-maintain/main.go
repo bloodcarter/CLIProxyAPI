@@ -333,8 +333,14 @@ func smoke(port int, key string) error {
 	called := false
 	for {
 		var e struct {
-			Type string                                 `json:"type"`
-			Item struct{ Type, Name, Arguments string } `json:"item"`
+			Type   string                                 `json:"type"`
+			Item   struct{ Type, Name, Arguments string } `json:"item"`
+			Status int                                    `json:"status"`
+			Error  struct {
+				Code    string `json:"code"`
+				Type    string `json:"type"`
+				Message string `json:"message"`
+			} `json:"error"`
 		}
 		if err = c.ReadJSON(&e); err != nil {
 			return fmt.Errorf("diagnostic response incomplete: %w", err)
@@ -346,7 +352,7 @@ func smoke(port int, key string) error {
 			}
 		}
 		if e.Type == "error" || e.Type == "response.failed" {
-			return errors.New("upstream diagnostic returned an error")
+			return fmt.Errorf("upstream diagnostic error: status=%d code=%s type=%s message=%.500s", e.Status, e.Error.Code, e.Error.Type, e.Error.Message)
 		}
 		if e.Type == "response.completed" {
 			if !called {
