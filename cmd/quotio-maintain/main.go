@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -151,6 +152,9 @@ func run(binary, version, commit string, check bool) error {
 	probePID, err := listenerPID(probePort)
 	if err != nil || probePID != candidate.Process.Pid {
 		return errors.New("candidate port is not owned by the candidate process")
+	}
+	if err = waitModel(probePort, key); err != nil {
+		return err
 	}
 	if err = smoke(probePort, key); err != nil {
 		return fmt.Errorf("candidate rejected before promotion: %w", err)
@@ -361,4 +365,32 @@ func smoke(port int, key string) error {
 			return nil
 		}
 	}
+}
+
+func waitModel(port int, key string) error {
+	client := &http.Client{Timeout: 3 * time.Second}
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		req, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/v1/models", port), nil)
+		req.Header.Set("Authorization", "Bearer "+key)
+		resp, err := client.Do(req)
+		if err == nil {
+			var models struct {
+				Data []struct {
+					ID string `json:"id"`
+				} `json:"data"`
+			}
+			decodeErr := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&models)
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK && decodeErr == nil {
+				for _, model := range models.Data {
+					if model.ID == "gpt-6-astra" {
+						return nil
+					}
+				}
+			}
+		}
+		time.Sleep(time.Second)
+	}
+	return errors.New("candidate did not register the required gpt-6-astra model within 60 seconds")
 }
