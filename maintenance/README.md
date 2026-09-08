@@ -1,6 +1,11 @@
 # Maintained Quotio engine
 
-This branch tracks stable router-for-me/CLIProxyAPI releases and preserves named standalone Codex inputs. Quotio remains the stock macOS app and manages the engine process. The downstream runtime change is in `repairResponsesToolCallItems`; its permanent regression is `TestRepairResponsesWebsocketToolCallsPreservesNamedUnsolicitedOutputs`.
+This branch tracks stable router-for-me/CLIProxyAPI releases and preserves named standalone Codex inputs and acknowledged synthetic WebSocket warm-up context. Quotio remains the stock macOS app and manages the engine process. Both permanent regressions are mandatory before an upstream build is promoted:
+
+- `TestRepairResponsesWebsocketToolCallsPreservesNamedUnsolicitedOutputs`: keeps named inputs without a paired `call_id`.
+- `TestResponsesWebsocketPrewarmPreservesCompactedFollowup`: keeps tools/base instructions when a compacted-history delta refers to a locally acknowledged warm-up. It also covers replacement tools, unrelated parent IDs, invalid-input retry, upstream-failure reconnect and subsequent real-response continuation.
+
+The warm-up repair materializes the exact acknowledged context before compaction-replacement detection. It is scoped to the pending response ID on that connection; genuine replacement transcripts do not inherit stale tools. No task-history changes or report relay are required.
 
 ## Update and install
 
