@@ -3197,6 +3197,68 @@ func TestResponsesWebsocketExposesCyberPolicyRegardlessOfStatus(t *testing.T) {
 	}
 }
 
+func TestResponsesWebsocketExposesTerminalOAuthError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	executor := &websocketUpstreamDisconnectExecutor{provider: "codex", subscribed: make(chan string, 1)}
+	manager := coreauth.NewManager(nil, nil, nil)
+	manager.RegisterExecutor(executor)
+	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
+	h := NewOpenAIResponsesAPIHandler(base)
+
+	router := gin.New()
+	router.GET("/v1/responses/ws", h.ResponsesWebsocket)
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/responses/ws"
+	conn, _, errDial := websocket.DefaultDialer.Dial(wsURL, nil)
+	if errDial != nil {
+		t.Fatalf("dial websocket: %v", errDial)
+	}
+	defer func() { _ = conn.Close() }()
+
+	var sessionID string
+	select {
+	case sessionID = <-executor.subscribed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for upstream disconnect subscription")
+	}
+
+	terminalErr := coreauth.NewTerminalAuthError(&coreauth.Error{
+		Code:       "auth_unavailable",
+		Message:    "no auth available",
+		HTTPStatus: http.StatusServiceUnavailable,
+	}, errors.New(`token refresh failed with status 401: {"error":{"message":"Refresh credential has already been consumed; sign in again.","type":"invalid_request_error","code":"refresh_token_reused"}}`))
+
+	executor.TriggerDisconnect(sessionID, terminalErr)
+
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, payload, errRead := conn.ReadMessage()
+	if errRead != nil {
+		t.Fatalf("terminal OAuth rejection was hidden: %v", errRead)
+	}
+	if got := gjson.GetBytes(payload, "type").String(); got != "error" {
+		t.Fatalf("type = %q, want error: %s", got, payload)
+	}
+	if got := gjson.GetBytes(payload, "status").Int(); got != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503: %s", got, payload)
+	}
+	if got := gjson.GetBytes(payload, "error.type").String(); got != "authentication_error" {
+		t.Fatalf("error.type = %q, want authentication_error: %s", got, payload)
+	}
+	if got := gjson.GetBytes(payload, "error.code").String(); got != "upstream_authentication_required" {
+		t.Fatalf("error.code = %q, want upstream_authentication_required: %s", got, payload)
+	}
+	retryable := gjson.GetBytes(payload, "error.retryable")
+	if !retryable.Exists() || retryable.Bool() {
+		t.Fatalf("error.retryable = %v, want explicit false: %s", retryable, payload)
+	}
+	if !strings.Contains(gjson.GetBytes(payload, "error.message").String(), "refresh_token_reused") {
+		t.Fatalf("error.message missing refresh_token_reused: %s", payload)
+	}
+}
+
 func TestResponsesWebsocketTerminalErrorWrittenOnceAcrossForwardAndDisconnect(t *testing.T) {
 	serverErrCh := make(chan error, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -4343,6 +4405,7 @@ func TestResponsesWebsocketPrewarmPreservesCompactedFollowup(t *testing.T) {
 		{name: "invalid_delta_retry", input: `[{"type":"compaction","encrypted_content":"opaque-checkpoint"},{"type":"function_call_output","name":"automation_update","output":"current heartbeat"}]`, parent: true, invalidFirst: true, wantPrefix: true},
 		{name: "invalid_type_retry", input: `[{"type":"function_call_output","name":"automation_update","output":"current heartbeat"}]`, parent: true, invalidType: true, wantPrefix: true},
 		{name: "replacement_inherits_defaults", input: `[{"type":"additional_tools","role":"developer","tools":[]}]`, omitModel: true},
+		{name: "invalid_replacement_retry", input: `[{"type":"additional_tools","role":"developer","tools":[]}]`, invalidFirst: true},
 		{name: "replacement_empty_tools", input: `[{"type":"additional_tools","role":"developer","tools":[]},{"type":"message","role":"user","content":"replacement"}]`},
 		{name: "replacement_new_tools", input: `[{"type":"additional_tools","role":"developer","tools":[{"type":"function","name":"replacement_tool"}]},{"type":"message","role":"user","content":"replacement"}]`},
 		{name: "unrelated_parent", input: `[{"type":"message","role":"user","content":"not this warmup"}]`, parent: true, wrongParent: true},
@@ -4352,8 +4415,8 @@ func TestResponsesWebsocketPrewarmPreservesCompactedFollowup(t *testing.T) {
 			manager := coreauth.NewManager(nil, nil, nil)
 			manager.RegisterExecutor(executor)
 			auth := &coreauth.Auth{ID: "prewarm-prefix-" + tc.name, Provider: "codex", Status: coreauth.StatusActive, Attributes: map[string]string{"websockets": "false"}}
-			if _, err := manager.Register(context.Background(), auth); err != nil {
-				t.Fatal(err)
+			if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
+				t.Fatal(errRegister)
 			}
 			registry.GetGlobalRegistry().RegisterClient(auth.ID, auth.Provider, []*registry.ModelInfo{{ID: "prewarm-prefix-model"}})
 			t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(auth.ID) })
@@ -4362,22 +4425,24 @@ func TestResponsesWebsocketPrewarmPreservesCompactedFollowup(t *testing.T) {
 			router.GET("/v1/responses/ws", h.ResponsesWebsocket)
 			server := httptest.NewServer(router)
 			defer server.Close()
-			conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/v1/responses/ws", http.Header{"Session_id": []string{auth.ID}})
-			if err != nil {
-				t.Fatal(err)
+			conn, _, errDial := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/v1/responses/ws", http.Header{"Session_id": []string{auth.ID}})
+			if errDial != nil {
+				t.Fatal(errDial)
 			}
-			defer func() { _ = conn.Close() }()
+			defer func() {
+				_ = conn.Close()
+			}()
 			send := func(raw string) {
 				t.Helper()
-				if err := conn.WriteMessage(websocket.TextMessage, []byte(raw)); err != nil {
-					t.Fatal(err)
+				if errSend := conn.WriteMessage(websocket.TextMessage, []byte(raw)); errSend != nil {
+					t.Fatal(errSend)
 				}
 			}
 			read := func() []byte {
 				t.Helper()
-				_, b, err := conn.ReadMessage()
-				if err != nil {
-					t.Fatal(err)
+				_, b, errRead := conn.ReadMessage()
+				if errRead != nil {
+					t.Fatal(errRead)
 				}
 				return b
 			}
@@ -4412,7 +4477,11 @@ func TestResponsesWebsocketPrewarmPreservesCompactedFollowup(t *testing.T) {
 				}
 			}
 			if tc.invalidFirst {
-				send(fmt.Sprintf(`{"type":"response.create","previous_response_id":%q,"input":{}}`, parent))
+				if tc.parent {
+					send(fmt.Sprintf(`{"type":"response.create","previous_response_id":%q,"input":{}}`, parent))
+				} else {
+					send(`{"type":"response.create","input":{}}`)
+				}
 				if gjson.GetBytes(read(), "type").String() != "error" || executor.streamCalls != 0 {
 					t.Fatal("invalid delta did not fail before upstream")
 				}
@@ -4432,9 +4501,10 @@ func TestResponsesWebsocketPrewarmPreservesCompactedFollowup(t *testing.T) {
 				// Terminal upstream errors close the connection. Codex reconnects
 				// and establishes a new warm-up before retrying the full request.
 				_ = conn.Close()
-				conn, _, err = websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/v1/responses/ws", http.Header{"Session_id": []string{auth.ID}})
-				if err != nil {
-					t.Fatal(err)
+				var errReconnect error
+				conn, _, errReconnect = websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/v1/responses/ws", http.Header{"Session_id": []string{auth.ID}})
+				if errReconnect != nil {
+					t.Fatal(errReconnect)
 				}
 				send(warmup)
 				newParent := gjson.GetBytes(read(), "response.id").String()

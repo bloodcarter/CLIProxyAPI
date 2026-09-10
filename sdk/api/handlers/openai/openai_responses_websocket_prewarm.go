@@ -75,7 +75,8 @@ func normalizeResponsesWebsocketPrewarmFollowup(rawJSON, warmupRequest []byte) (
 		return nil, warmupRequest, &interfaces.ErrorMessage{StatusCode: http.StatusBadRequest, Error: errMerge}
 	}
 	normalized := normalizeResponseTranscriptReplacement(rawJSON, warmupRequest)
-	normalized, errSet := sjson.SetRawBytes(normalized, "input", merged)
+	var errSet error
+	normalized, errSet = sjson.SetRawBytes(normalized, "input", merged)
 	if errSet != nil {
 		return nil, warmupRequest, &interfaces.ErrorMessage{StatusCode: http.StatusBadRequest, Error: errSet}
 	}
