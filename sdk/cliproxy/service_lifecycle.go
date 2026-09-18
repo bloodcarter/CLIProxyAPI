@@ -127,6 +127,8 @@ func (s *Service) Run(ctx context.Context) error {
 	s.syncPluginRuntimeConfig(ctx)
 	if homeEnabled {
 		s.syncPluginModelRuntime(ctx)
+	} else {
+		s.registerModelsForAuthBatch(ctx, s.coreManager.List())
 	}
 
 	if s.authManager == nil {

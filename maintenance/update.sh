@@ -25,7 +25,10 @@ fi
 for regression in TestRepairResponsesWebsocketToolCallsPreservesNamedUnsolicitedOutputs TestResponsesWebsocketPrewarmPreservesCompactedFollowup; do
   test "$(go test ./sdk/api/handlers/openai -list "^${regression}$" | head -1)" = "$regression"
 done
+startup_regression=TestServiceRunRegistersLoadedCodexModelsBeforeListenerStart
+test "$(go test ./sdk/cliproxy -list "^${startup_regression}$" | head -1)" = "$startup_regression"
 go test ./sdk/api/handlers/openai ./cmd/quotio-maintain -count=1
+go test ./sdk/cliproxy -run "^${startup_regression}$" -count=1
 go build -ldflags "-X main.Version=$version -X main.Commit=$revision" -o "$build_dir/CLIProxyAPI" ./cmd/server
 go run ./cmd/quotio-maintain -binary "$build_dir/CLIProxyAPI" -version "$version" -commit "$revision"
 git push origin HEAD:codex/quotio-maintained
