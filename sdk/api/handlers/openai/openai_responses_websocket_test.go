@@ -2093,7 +2093,7 @@ func TestRepairResponsesWebsocketToolCallsPreservesNamedUnsolicitedOutputs(t *te
 			for _, idField := range []string{"", `,"call_id":null`} {
 				raw := []byte(fmt.Sprintf(`{"input":[{"type":"message","role":"user","content":"prior context"},{"type":"function_call_output","namespace":"codex_app","name":%q,"output":"SCHEDULE_TOOL_OK"%s}]}`, name, idField))
 				repaired := repairResponsesWebsocketToolCallsWithCache(cache, "unsolicited-test", raw)
-				if got := gjson.GetBytes(repaired, "input.1.output").String(); got != "SCHEDULE_TOOL_OK" {
+				if got := ojson.GetBytesNoCopy(repaired, "input.1.output").String(); got != "SCHEDULE_TOOL_OK" {
 					t.Fatalf("named standalone output was dropped: %s", repaired)
 				}
 			}
